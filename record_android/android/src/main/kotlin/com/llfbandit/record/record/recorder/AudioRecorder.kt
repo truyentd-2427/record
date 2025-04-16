@@ -1,7 +1,11 @@
 package com.llfbandit.record.record.recorder
 
 import android.content.Context
+import android.media.AudioAttributes
+import android.media.AudioDeviceInfo
+import android.media.AudioFocusRequest
 import android.media.AudioManager
+import android.os.Build
 import android.util.Log
 import com.llfbandit.record.record.RecordConfig
 import com.llfbandit.record.record.RecordState
@@ -48,6 +52,8 @@ class AudioRecorder(
         AudioManager.STREAM_SYSTEM,
         AudioManager.STREAM_VOICE_CALL,
     )
+
+    private var audioFocusRequest: AudioFocusRequest? = null
 
     init {
         initMuteSettings()
@@ -107,6 +113,8 @@ class AudioRecorder(
     }
 
     override fun dispose() {
+        setSpeakerphoneOff()
+        releaseAudioFocus()
         stop(null)
     }
 
@@ -173,15 +181,79 @@ class AudioRecorder(
         audioManager.setMode(config.audioManagerMode ?: AudioManager.MODE_NORMAL)
     }
 
+    private fun requestAudioFocus() {
+        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) { // API 26+
+            val audioAttributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+
+            audioFocusRequest = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(audioAttributes)
+                .setAcceptsDelayedFocusGain(true)
+                .setWillPauseWhenDucked(true)
+                .build()
+
+            audioManager.requestAudioFocus(audioFocusRequest!!)
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.requestAudioFocus(
+                null,
+                AudioManager.STREAM_VOICE_CALL,
+                AudioManager.AUDIOFOCUS_GAIN
+            )
+        }
+    }
+
+    private fun releaseAudioFocus() {
+        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            audioFocusRequest?.let {
+                audioManager.abandonAudioFocusRequest(it)
+            }
+        } else {
+            @Suppress("DEPRECATION")
+            audioManager.abandonAudioFocus(null)
+        }
+    }
+
     private fun setSpeakerphoneOn() {
         val config = this.config
+        val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         if (config == null) {
             return
         }
         if (config.setSpeakerphoneOn == false) {
             return
         }
+        // Request audio focus
+        requestAudioFocus()
+
+        // Set audio mode
+        audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12+
+            val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+            for (device in devices) {
+                if (device.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    audioManager.setCommunicationDevice(device)
+                    break
+                }
+            }
+            audioManager.clearCommunicationDevice()
+
+        } else {
+            audioManager.isSpeakerphoneOn = true
+        }
+    }
+
+    private fun setSpeakerphoneOff() {
         val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-        audioManager.setSpeakerphoneOn(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12+
+            audioManager.clearCommunicationDevice()
+        } else {
+            audioManager.isSpeakerphoneOn = true
+        }
     }
 }
